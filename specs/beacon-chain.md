@@ -1,5 +1,5 @@
 # Ethereum 2.0 spec—Casper and sharding
-
+# 带批注版本
 ###### tags: `spec`, `eth2.0`, `casper`, `sharding`
 
 **NOTICE**: This document is a work-in-progress for researchers and implementers. It reflects recent spec changes and takes precedence over the [Python proof-of-concept implementation](https://github.com/ethereum/beacon_chain).
@@ -16,13 +16,22 @@ The primary source of load on the beacon chain are "attestations". Attestations 
 * **Active validator set** - those validators who are currently participating, and which the Casper mechanism looks to produce and attest to blocks, crosslinks and other consensus objects.
 * **Committee** - a (pseudo-) randomly sampled subset of the active validator set. When a committee is referred to collectively, as in "this committee attests to X", this is assumed to mean "some subset of that committee that contains enough validators that the protocol recognizes it as representing the committee".
 * **Proposer** - the validator that creates a beacon chain block
+  * 起码在prysm的实现中，proposer所propose的beacon block的slot一定是这个proposer被assign去propose的slot，这个slot number不受proposer控制，也就是该你这个proposer propose了，你propose的beacon block中slot number该几就是几，不能改（在这个cycle开始的时候就已经定下了）。但是这个beacon block的parent hash你可以自己选（信哪个选哪个，甚至作恶故意选错误的parent，如果你愿意）。所以propose过程可以造成分叉
 * **Attester** - a validator that is part of a committee that needs to sign off on a beacon chain block while simultaneously creating a link (crosslink) to a recent shard block on a particular shard chain.
+  * attester通过创建`AttestationRecord`来完成其使命
+    * attester可以自己决定`AttestationRecord`中的`slot`的选择。我们知道一个slot和一个proposed beacon block是一一对应的，所以这个`slot`的选择，其实就是attester选择要attest哪一个beacon block来作为其所认为的cannonical head。由于每个attestation都是有stake在上面的，这也可以说是通过stake来vote beacon block，或者叫做attest beacon block。
+      * 很可能当attester开始创建`AttestationRecord`时，他发现前面几个slot proposed的block是互相冲突的，不在一条链上。这些proposed block有各自不同的的slot number
+  * attester通过对`shard_block_hash`的选择，可以attest不同的shard chain中的block。你信哪个就写哪个，但是必须写你在这个cycle所负责的shard中的shard chain block
+    * proposer是没有shard的区分的。但是attester是有区分shard的。一个attester在一个cycle中只能参与一个shard
+  * 所以`AttestationRecord`其实是用stake同时attest了两件事情：一个是beacon block哪个才是正确的head，一个是某个shard chain当中哪个shard block是它所在shard chain当中的正确的head。下文中在cycle transition的时候会看到，前者帮助beacon chain决定哪些beacon block可以被finalize，后者帮助beacon chain决定哪些shard block可以被写入crosslink，也就是被beacon chain承认
 * **Beacon chain** - the central PoS chain that is the base of the sharding system.
 * **Shard chain** - one of the chains on which user transactions take place and account data is stored.
 * **Crosslink** - a set of signatures from a committee attesting to a block in a shard chain, which can be included into the beacon chain. Crosslinks are the main means by which the beacon chain "learns about" the updated state of shard chains.
+  * crosslink是实现crossshard communication的唯一桥梁
 * **Slot** - a period of `SLOT_DURATION` seconds, during which one proposer has the ability to create a beacon chain block and some attesters have the ability to make attestations
 * **Cycle** - a span of slots during which all validators get exactly one chance to make an attestation
 * **Finalized**, **justified** - see Casper FFG finalization here: https://arxiv.org/abs/1710.09437
+  * 基本上来讲，一个beacon block被justified意思就是有其他beacon block被propose出来了，而且爹写的是你。被finalized的意思是有足够多attestation含有足够多的stake来attest你，所以你被beacon chain承认为不可更改的beacon chain历史的一部分（被finalize了就不用担心你被revert了）
 * **Withdrawal period** - number of slots between a validator exit and the validator balance being withdrawable
 * **Genesis time** - the Unix time of the genesis beacon chain block at slot 0
 
@@ -50,7 +59,7 @@ The primary source of load on the beacon chain are "attestations". Attestations 
 **Notes**
 
 * See a recommended `MIN_COMMITTEE_SIZE`  of 111 here https://vitalik.ca/files/Ithaca201807_Sharding.pdf).
-* The `SQRT_E_DROP_TIME` constant is the amount of time it takes for the quadratic leak to cut deposits of non-participating validators by ~39.4%. 
+* The `SQRT_E_DROP_TIME` constant is the amount of time it takes for the quadratic leak to cut deposits of non-participating validators by ~39.4%.
 * The `BASE_REWARD_QUOTIENT` constant is the per-slot interest rate assuming all validators are participating, assuming total deposits of 1 ETH. It corresponds to ~3.88% annual interest assuming 10 million participating ETH.
 * At most `1/MAX_VALIDATOR_CHURN_QUOTIENT` of the validators can change during each validator set change.
 
@@ -677,8 +686,11 @@ For every slot `s` in the range `last_state_recalculation_slot - CYCLE_LENGTH ..
 
 * Let `total_balance` be the total balance of active validators.
 * Let `total_balance_attesting_at_s` be the total balance of validators that attested to the beacon block at slot `s`.
+  * 这个应该说成"attested to the beacon block with slot number `s`"
+  * 含义就是`total_balance_attesting_at_beacon_block_with_slot_s`
 * If `3 * total_balance_attesting_at_s >= 2 * total_balance` set `last_justified_slot = max(last_justified_slot, s)` and `justified_streak += 1`. Otherwise set `justified_streak = 0`.
 * If `justified_streak >= CYCLE_LENGTH + 1` set `last_finalized_slot = max(last_finalized_slot, s - CYCLE_LENGTH - 1)`.
+  * 感觉这个finalize故意是要滞后一个CYCLE_LENGTH。太早finalize是很危险的，因为就再也不可能被revert了
 
 For every `(shard, shard_block_hash)` tuple:
 
